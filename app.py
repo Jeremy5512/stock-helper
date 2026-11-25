@@ -6,6 +6,7 @@ import re
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import requests
 import streamlit as st
 from urllib.parse import quote
@@ -59,7 +60,7 @@ def latest(s):
 def load_tw(sid):
     s3 = (TODAY - dt.timedelta(days=1100)).isoformat()
     s1 = (TODAY - dt.timedelta(days=500)).isoformat()
-    px = fm("TaiwanStockPrice", sid, (TODAY - dt.timedelta(days=400)).isoformat())
+    px = fm("TaiwanStockPrice", sid, (TODAY - dt.timedelta(days=1830)).isoformat())
     fs = fm("TaiwanStockFinancialStatements", sid, s3)
     bs = fm("TaiwanStockBalanceSheet", sid, s1)
     cf = fm("TaiwanStockCashFlowsStatement", sid, s3)
@@ -70,7 +71,11 @@ def load_tw(sid):
     if px.empty or fs.empty or bs.empty:
         raise RuntimeError("查無此代號的資料")
     pxs = px.sort_values("date")
-    hist = pd.DataFrame({"date": pd.to_datetime(pxs["date"]), "close": pxs["close"].astype(float).values})
+    cl = pxs["close"].astype(float).values
+    col = lambda n: pxs[n].astype(float).values if n in pxs else cl
+    hist = pd.DataFrame({"date": pd.to_datetime(pxs["date"]).values, "open": col("open"), "high": col("max"),
+                         "low": col("min"), "close": cl,
+                         "volume": pxs["Trading_Volume"].astype(float).values if "Trading_Volume" in pxs else 0.0})
 
     rev = qseries(fs, ["Revenue"])
     gp = qseries(fs, ["GrossProfit"])
@@ -150,10 +155,12 @@ def load_us(sym):
     except Exception:
         price = info.get("currentPrice") or info.get("regularMarketPrice")
     shares = shares or info.get("sharesOutstanding")
-    hist = pd.DataFrame(columns=["date", "close"])
+    hist = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
     try:
-        h = t.history(period="1y")
-        hist = pd.DataFrame({"date": h.index.tz_localize(None), "close": h["Close"].astype(float).values})
+        h = t.history(period="5y")
+        hist = pd.DataFrame({"date": h.index.tz_localize(None), "open": h["Open"].astype(float).values,
+                             "high": h["High"].astype(float).values, "low": h["Low"].astype(float).values,
+                             "close": h["Close"].astype(float).values, "volume": h["Volume"].astype(float).values})
     except Exception:
         pass
     if price is None and len(hist):
@@ -418,18 +425,69 @@ if sym:
                 f'<div><span>52 週最高</span><b>{hi}</b></div><div><span>52 週最低</span><b>{lo}</b></div></div>', unsafe_allow_html=True)
 
     if len(hist) > 2:
-        rng = st.radio("區間", ["1 個月", "3 個月", "6 個月", "1 年"], index=2, horizontal=True, label_visibility="collapsed")
-        n = {"1 個月": 21, "3 個月": 63, "6 個月": 126, "1 年": 252}[rng]
-        hh = hist.tail(n)
-        fig = go.Figure(go.Scatter(x=hh["date"], y=hh["close"], mode="lines", line=dict(color=line_c, width=2.2),
-                                   fill="tozeroy", fillcolor=rgba(line_c, 0.10), hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra></extra>"))
-        lo_, hi_ = float(hh["close"].min()), float(hh["close"].max())
-        pad = (hi_ - lo_) * 0.15 or 1
-        fig.update_layout(height=300, margin=dict(l=0, r=0, t=8, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                          showlegend=False, hovermode="x unified", font=dict(color="#9fb3d1"),
-                          xaxis=dict(showgrid=False, color="#5f7596"),
-                          yaxis=dict(range=[lo_ - pad, hi_ + pad], gridcolor="#16263f", color="#5f7596", side="right"))
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        DAYS = {"1M": 30, "3M": 91, "6M": 182, "YTD": None, "1Y": 365, "5Y": 1826, "全部": None}
+        tf = st.radio("時間範圍", list(DAYS), index=4, horizontal=True, label_visibility="collapsed")
+        k1, k2, k3 = st.columns([2, 1, 3])
+        kind = k1.radio("樣式", ["K 線", "折線", "面積"], horizontal=True)
+        freq = k2.selectbox("週期", ["日", "週", "月"])
+        inds = k3.multiselect("技術指標", ["MA5", "MA20", "MA60", "成交量"], default=["成交量"])
+
+        r = hist.set_index("date")
+        if freq != "日":
+            r = r.resample("W-FRI" if freq == "週" else "MS").agg(
+                {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna(subset=["close"])
+        for n_ in (5, 20, 60):
+            r[f"MA{n_}"] = r["close"].rolling(n_).mean()
+        r = r.reset_index()
+        last_d = r["date"].iloc[-1]
+        if tf == "YTD":
+            h = r[r["date"] >= pd.Timestamp(last_d.year, 1, 1)]
+        elif DAYS[tf]:
+            h = r[r["date"] >= last_d - pd.Timedelta(days=DAYS[tf])]
+        else:
+            h = r
+        if len(h) < 2:
+            h = r.tail(2)
+        line_c = UP if float(h["close"].iloc[-1]) >= float(h["close"].iloc[0]) else DN
+
+        lb = h.iloc[-1]
+        oc = UP if lb["close"] >= lb["open"] else DN
+        st.markdown(f'<div style="font-size:.8rem;color:#7f93b2;margin:2px 0 4px">'
+                    f'<span style="color:{oc}">開 {lb["open"]:,.2f}　高 {lb["high"]:,.2f}　低 {lb["low"]:,.2f}　收 {lb["close"]:,.2f}</span>'
+                    f'　成交量 {lb["volume"]:,.0f}　（{lb["date"].date()}，{freq}線）</div>', unsafe_allow_html=True)
+
+        vol = "成交量" in inds
+        fig = make_subplots(rows=2 if vol else 1, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                            row_heights=[0.78, 0.22] if vol else [1])
+        if kind == "K 線":
+            fig.add_trace(go.Candlestick(x=h["date"], open=h["open"], high=h["high"], low=h["low"], close=h["close"],
+                                         increasing=dict(line=dict(color=UP), fillcolor=UP),
+                                         decreasing=dict(line=dict(color=DN), fillcolor=DN), name="價格"), row=1, col=1)
+            lo_, hi_ = float(h["low"].min()), float(h["high"].max())
+        else:
+            fig.add_trace(go.Scatter(x=h["date"], y=h["close"], mode="lines", name="收盤", line=dict(color=line_c, width=2),
+                                     fill="tozeroy" if kind == "面積" else None, fillcolor=rgba(line_c, 0.12),
+                                     hovertemplate="%{y:,.2f}<extra></extra>"), row=1, col=1)
+            lo_, hi_ = float(h["close"].min()), float(h["close"].max())
+        for name_, color_ in (("MA5", "#FFC857"), ("MA20", "#00E5FF"), ("MA60", "#B388FF")):
+            if name_ in inds:
+                fig.add_trace(go.Scatter(x=h["date"], y=h[name_], mode="lines", name=name_, line=dict(color=color_, width=1.3),
+                                         hovertemplate="%{y:,.2f}<extra></extra>"), row=1, col=1)
+        if vol:
+            vc = [rgba(UP if c_ >= o_ else DN, 0.55) for o_, c_ in zip(h["open"], h["close"])]
+            fig.add_trace(go.Bar(x=h["date"], y=h["volume"], marker_color=vc, name="成交量", showlegend=False,
+                                 hovertemplate="%{y:,.0f}<extra></extra>"), row=2, col=1)
+        pad = (hi_ - lo_) * 0.08 or 1
+        fig.update_yaxes(range=[lo_ - pad, hi_ + pad], row=1, col=1)
+        fig.update_xaxes(showgrid=True, gridcolor="#16263f", color="#5f7596", rangeslider_visible=False,
+                         showspikes=True, spikemode="across", spikethickness=1, spikecolor="#5f7596", spikedash="dot")
+        fig.update_yaxes(gridcolor="#16263f", color="#5f7596", side="right", showspikes=True, spikecolor="#5f7596", spikethickness=1)
+        if freq == "日":
+            fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+        fig.update_layout(height=430 if vol else 350, margin=dict(l=0, r=0, t=8, b=0), paper_bgcolor="rgba(0,0,0,0)",
+                          plot_bgcolor="rgba(0,0,0,0)", hovermode="x unified", font=dict(color="#9fb3d1"),
+                          legend=dict(orientation="h", y=1.04, x=0, font=dict(size=11)), dragmode="pan")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": True})
 
     sc_n = {"good": 2, "ok": 1, "bad": 0}
     lv = [m[2] for m in M if m[2]]
