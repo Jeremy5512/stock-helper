@@ -1,4 +1,4 @@
-"""基本面小幫手：輸入代號，自動抓台股（FinMind）或美股（yfinance）財報，算出 11 項指標並給學習重點。
+"""FundaScope 基本面透視：輸入代號，自動抓台股（FinMind）或美股（yfinance）財報，算出 11 項指標並給學習重點。
 注意：本程式未在實際網路環境測試過，欄位名稱若與資料源不符，請看畫面下方「原始數據」並回報。"""
 import datetime as dt
 import os
@@ -277,10 +277,10 @@ def learn(R, adj):
 
 
 # ---------- 畫面（深色科技風）----------
-st.set_page_config(page_title="基本面小幫手", page_icon="📊", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="FundaScope｜基本面透視", page_icon="🔭", layout="centered", initial_sidebar_state="collapsed")
 st.markdown("""<style>
 .block-container{padding-top:1.4rem;max-width:880px}
-h1.t{font-size:1.6rem;margin:0;font-weight:800;letter-spacing:.04em;background:linear-gradient(90deg,#00E5FF,#7C4DFF);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+h1.t{font-size:1.6rem;margin:0;font-weight:800;letter-spacing:.18em;background:linear-gradient(90deg,#00E5FF,#7C4DFF);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .sub{color:#7f93b2;font-size:.85rem;margin:2px 0 14px}
 .hero{background:linear-gradient(135deg,#0f1a2e,#0b1220);border:1px solid #1e3a5f;border-radius:16px;padding:18px 20px;box-shadow:0 0 24px rgba(0,229,255,.08)}
 .hero .nm{color:#9fb3d1;font-size:.95rem}
@@ -325,7 +325,7 @@ sym = st.text_input("股票代號", placeholder="輸入股票代號，例如 233
 landing = not sym
 cls = " c" if landing else ""
 hint = '<div class="hint">試試看：2330　2454　AAPL　NVDA</div>' if landing else ""
-head.markdown(f'<h1 class="t{cls}">📊 基本面小幫手</h1><div class="sub{cls}">輸入代號自動抓財報｜台股、美股｜僅供學習，不構成投資建議</div>', unsafe_allow_html=True)
+head.markdown(f'<h1 class="t{cls}">🔭 FUNDASCOPE</h1><div class="sub{cls}">基本面透視　·　輸入代號，看穿財報｜台股、美股｜僅供學習，不構成投資建議</div>', unsafe_allow_html=True)
 if landing:
     st.markdown("<style>.block-container{padding-top:26vh !important}</style>" + hint, unsafe_allow_html=True)
 adj_in = 0.0
