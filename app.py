@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from urllib.parse import quote
 
 FM = "https://api.finmindtrade.com/api/v4/data"
 TODAY = dt.date.today()
@@ -269,7 +270,7 @@ def learn(R, adj):
 
 
 # ---------- 畫面（深色科技風）----------
-st.set_page_config(page_title="基本面小幫手", page_icon="📊", layout="centered")
+st.set_page_config(page_title="基本面小幫手", page_icon="📊", layout="centered", initial_sidebar_state="collapsed")
 st.markdown("""<style>
 .block-container{padding-top:1.4rem;max-width:880px}
 h1.t{font-size:1.6rem;margin:0;font-weight:800;letter-spacing:.04em;background:linear-gradient(90deg,#00E5FF,#7C4DFF);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
@@ -296,12 +297,65 @@ h1.t{font-size:1.6rem;margin:0;font-weight:800;letter-spacing:.04em;background:l
 .lp{background:#101a2c;border:1px solid #223653;border-radius:10px;padding:10px 14px;margin:8px 0;color:#d6e4f5;font-size:.92rem}
 h3.s{color:#00E5FF;font-size:1rem;letter-spacing:.06em;margin:18px 0 6px}
 @media(max-width:640px){.kp{grid-template-columns:repeat(2,1fr)}.hero .px{font-size:2.6rem}}
+@keyframes fi{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.t,.sub{animation:fi .8s ease both}
+h1.t.c{font-size:2.5rem;text-align:center}
+.sub.c{text-align:center;font-size:.95rem}
+.hint{text-align:center;color:#5f7596;font-size:.85rem;margin-top:14px;animation:fi 1.2s .3s ease both}
+div[data-testid="stTextInput"]{max-width:540px;margin:0 auto}
+div[data-baseweb="input"]{border-radius:14px;border:1px solid #1e3a5f;box-shadow:0 0 20px rgba(0,229,255,.12)}
+.hero{animation:fi .8s ease both}
+.kp{animation:fi .8s .15s ease both}
+div[data-testid="stRadio"]{animation:fi .8s .25s ease both}
+div[data-testid="stPlotlyChart"]{animation:fi .9s .3s ease both}
+.sc{animation:fi .8s .45s ease both}
+h3.s{animation:fi .8s .55s ease both}
+.card{animation:fi .8s .65s ease both}
+.lp{animation:fi .8s .8s ease both}
 </style>""", unsafe_allow_html=True)
-st.markdown('<h1 class="t">📊 基本面小幫手</h1><div class="sub">輸入代號自動抓財報｜台股 2330、美股 AAPL｜僅供學習，不構成投資建議</div>', unsafe_allow_html=True)
+head = st.empty()
+sym = st.text_input("股票代號", placeholder="輸入股票代號，例如 2330 或 AAPL", label_visibility="collapsed").strip().upper()
+landing = not sym
+cls = " c" if landing else ""
+hint = '<div class="hint">試試看：2330　2454　AAPL　NVDA</div>' if landing else ""
+head.markdown(f'<h1 class="t{cls}">📊 基本面小幫手</h1><div class="sub{cls}">輸入代號自動抓財報｜台股、美股｜僅供學習，不構成投資建議</div>', unsafe_allow_html=True)
+if landing:
+    st.markdown("<style>.block-container{padding-top:26vh !important}</style>" + hint, unsafe_allow_html=True)
+adj_in = 0.0
+if sym:
+    with st.expander("進階：扣除一次性損益"):
+        adj_in = st.number_input("金額單位同下方財報（台股：億元，美股：十億美元）", value=0.0, step=1.0)
 
-sym = st.text_input("股票代號", placeholder="2330 或 AAPL", label_visibility="collapsed").strip().upper()
-with st.expander("進階：扣除一次性損益"):
-    adj_in = st.number_input("金額單位同下方財報（台股：億元，美股：十億美元）", value=0.0, step=1.0)
+
+def site_links(sym, is_tw):
+    if not sym:
+        return [("Goodinfo 台灣股市資訊網", "https://goodinfo.tw/"), ("Yahoo 奇摩股市", "https://tw.stock.yahoo.com/"),
+                ("公開資訊觀測站（官方財報）", "https://mops.twse.com.tw/"), ("Yahoo Finance", "https://finance.yahoo.com/"),
+                ("SEC EDGAR（美股官方財報）", "https://www.sec.gov/edgar/search/"), ("Investing.com", "https://www.investing.com/")]
+    q = quote(sym)
+    if is_tw:
+        return [("Goodinfo 台灣股市資訊網", f"https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID={q}"),
+                ("Yahoo 奇摩股市", f"https://tw.stock.yahoo.com/quote/{q}"),
+                ("鉅亨網", f"https://www.cnyes.com/twstock/{q}"),
+                ("公開資訊觀測站（官方財報）", "https://mops.twse.com.tw/"),
+                ("TradingView", f"https://www.tradingview.com/symbols/TWSE-{q}/"),
+                ("Investing.com 搜尋", f"https://www.investing.com/search/?q={q}")]
+    return [("Yahoo Finance", f"https://finance.yahoo.com/quote/{q}"),
+            ("Google Finance", f"https://www.google.com/finance?q={q}"),
+            ("SEC EDGAR（官方財報）", f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={q}&type=10-&owner=include&count=40"),
+            ("StockAnalysis 財報", f"https://stockanalysis.com/stocks/{q.lower()}/financials/"),
+            ("Finviz", f"https://finviz.com/quote.ashx?t={q}"),
+            ("TradingView", f"https://www.tradingview.com/symbols/{q}/"),
+            ("Investing.com 搜尋", f"https://www.investing.com/search/?q={q}")]
+
+
+is_tw = bool(re.fullmatch(r"\d{4,6}[A-Z]?", sym)) if sym else False
+st.sidebar.markdown("### 🔗 查證資料來源")
+st.sidebar.caption("覺得數字怪怪的？點下面的網站，對照本程式抓到的資料。")
+for _n, _u in site_links(sym, is_tw):
+    st.sidebar.markdown(f"- [{_n}]({_u})")
+side_nums = st.sidebar.empty()
+st.sidebar.caption("各網站的計算口徑（例如 EPS 是否含一次性項目、近四季或年度）不同，小差異屬正常。")
 
 COL = {"good": "#00E5A0", "ok": "#FFC857", "bad": "#FF5C7A", None: "#5f7596"}
 LBL = {"good": "良好", "ok": "普通", "bad": "留意", None: "無資料"}
@@ -328,6 +382,14 @@ if sym:
         d["eps"] = d["eps"] * d["ni"] / old if d["eps"] else d["eps"]
     M, R = analyze(d)
     hist = d["hist"]
+    _f = lambda v: "—" if v is None else f"{v / d['ud']:,.2f}"
+    _g = lambda v: "—" if v is None else f"{v:,.2f}"
+    _lines = ["**本程式抓到的數字**", "",
+              f"- 股價：{_g(d['price'])} {d['cur']}", f"- 近四季 EPS：{_g(d['eps'])}",
+              f"- 每股淨值：{_g(d['bv'])}", f"- 年度股利：{_g(d['div'])}",
+              f"- 近四季營收：{_f(d['rev'])} {d['ul']}", f"- 近四季淨利：{_f(d['ni'])} {d['ul']}",
+              f"- 營業現金流：{_f(d['cfo'])} {d['ul']}", f"- 財報最新期別：{d['asof']}"]
+    side_nums.markdown("\n".join(_lines))
 
     # 台股慣例：紅漲綠跌；美股：綠漲紅跌
     UP, DN = ("#FF4D6A", "#00E5A0") if is_tw else ("#00E5A0", "#FF4D6A")
