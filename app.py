@@ -484,6 +484,12 @@ if sym:
         fig.update_yaxes(gridcolor="#16263f", color="#5f7596", side="right", showspikes=True, spikecolor="#5f7596", spikethickness=1)
         if freq == "日":
             fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+        # 限制拖曳與縮放範圍：不能超出資料的頭尾，避免出現一片空白
+        step = h["date"].diff().median()
+        step = step if pd.notna(step) else pd.Timedelta(days=1)
+        x0, x1 = h["date"].iloc[0] - step * 0.6, h["date"].iloc[-1] + step * 0.6
+        fig.update_xaxes(range=[x0, x1], minallowed=x0, maxallowed=x1)
+        fig.update_yaxes(fixedrange=True)
         fig.update_layout(height=430 if vol else 350, margin=dict(l=0, r=0, t=8, b=0), paper_bgcolor="rgba(0,0,0,0)",
                           plot_bgcolor="rgba(0,0,0,0)", hovermode="x unified", font=dict(color="#9fb3d1"),
                           legend=dict(orientation="h", y=1.04, x=0, font=dict(size=11)), dragmode="pan")
