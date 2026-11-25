@@ -5,6 +5,7 @@ import os
 import re
 
 import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 
@@ -57,7 +58,7 @@ def latest(s):
 def load_tw(sid):
     s3 = (TODAY - dt.timedelta(days=1100)).isoformat()
     s1 = (TODAY - dt.timedelta(days=500)).isoformat()
-    px = fm("TaiwanStockPrice", sid, (TODAY - dt.timedelta(days=20)).isoformat())
+    px = fm("TaiwanStockPrice", sid, (TODAY - dt.timedelta(days=400)).isoformat())
     fs = fm("TaiwanStockFinancialStatements", sid, s3)
     bs = fm("TaiwanStockBalanceSheet", sid, s1)
     cf = fm("TaiwanStockCashFlowsStatement", sid, s3)
@@ -67,6 +68,8 @@ def load_tw(sid):
         dv = pd.DataFrame()
     if px.empty or fs.empty or bs.empty:
         raise RuntimeError("查無此代號的資料")
+    pxs = px.sort_values("date")
+    hist = pd.DataFrame({"date": pd.to_datetime(pxs["date"]), "close": pxs["close"].astype(float).values})
 
     rev = qseries(fs, ["Revenue"])
     gp = qseries(fs, ["GrossProfit"])
@@ -101,7 +104,7 @@ def load_tw(sid):
 
     return dict(
         name=sid, cur="元", ud=1e8, ul="億元", mk="tw",
-        price=float(px.sort_values("date")["close"].iloc[-1]),
+        price=float(hist["close"].iloc[-1]), hist=hist,
         eps=ttm(eps), bv=(equity / shares) if equity and shares else None, div=div,
         rev=ttm(rev), prev=ttm(rev, 1), gp=ttm(gp), ni=ttm(ni),
         eq=equity, ta=bsv(["TotalAssets"]), tl=bsv(["Liabilities", "TotalLiabilities"]),
@@ -146,6 +149,14 @@ def load_us(sym):
     except Exception:
         price = info.get("currentPrice") or info.get("regularMarketPrice")
     shares = shares or info.get("sharesOutstanding")
+    hist = pd.DataFrame(columns=["date", "close"])
+    try:
+        h = t.history(period="1y")
+        hist = pd.DataFrame({"date": h.index.tz_localize(None), "close": h["Close"].astype(float).values})
+    except Exception:
+        pass
+    if price is None and len(hist):
+        price = float(hist["close"].iloc[-1])
 
     div = None
     try:
@@ -172,7 +183,7 @@ def load_us(sym):
 
     return dict(
         name=info.get("shortName", sym), cur="美元", ud=1e9, ul="十億美元", mk="us",
-        price=price, eps=eps_t, bv=(equity / shares) if equity and shares else None, div=div,
+        price=price, hist=hist, eps=eps_t, bv=(equity / shares) if equity and shares else None, div=div,
         rev=rev_t, prev=prev, gp=ttm(gp), ni=ni_t,
         eq=equity, ta=bsl(["Total Assets"]),
         tl=bsl(["Total Liabilities Net Minority Interest", "Total Liabilities"]),
@@ -257,13 +268,49 @@ def learn(R, adj):
     return o[:6]
 
 
-# ---------- 畫面 ----------
-st.set_page_config(page_title="基本面小幫手", page_icon="📊")
-st.title("📊 基本面小幫手")
-st.caption("輸入代號自動抓財報：台股（例 2330）、美股（例 AAPL）。僅供學習，不構成投資建議。")
+# ---------- 畫面（深色科技風）----------
+st.set_page_config(page_title="基本面小幫手", page_icon="📊", layout="centered")
+st.markdown("""<style>
+.block-container{padding-top:1.4rem;max-width:880px}
+h1.t{font-size:1.6rem;margin:0;font-weight:800;letter-spacing:.04em;background:linear-gradient(90deg,#00E5FF,#7C4DFF);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.sub{color:#7f93b2;font-size:.85rem;margin:2px 0 14px}
+.hero{background:linear-gradient(135deg,#0f1a2e,#0b1220);border:1px solid #1e3a5f;border-radius:16px;padding:18px 20px;box-shadow:0 0 24px rgba(0,229,255,.08)}
+.hero .nm{color:#9fb3d1;font-size:.95rem}
+.hero .px{font-size:3.3rem;font-weight:800;line-height:1.1;color:#fff;font-variant-numeric:tabular-nums}
+.hero .px small{font-size:1rem;color:#7f93b2;margin-left:8px;font-weight:400}
+.hero .chg{font-size:1.2rem;font-weight:700}
+.hero .dt{color:#5f7596;font-size:.75rem;margin-top:4px}
+.kp{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}
+.kp div{background:#0f1a2e;border:1px solid #1b2c47;border-radius:12px;padding:10px 12px}
+.kp span{display:block;color:#7f93b2;font-size:.72rem}
+.kp b{font-size:1.2rem;color:#E6F1FF}
+.sc{display:flex;align-items:center;gap:16px;background:#0f1a2e;border:1px solid #1b2c47;border-radius:14px;padding:14px 18px;margin:8px 0 14px}
+.ring{width:84px;height:84px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none}
+.ring i{width:66px;height:66px;border-radius:50%;background:#0f1a2e;display:flex;align-items:center;justify-content:center;font-style:normal;font-size:1.5rem;font-weight:800;color:#fff}
+.sc .tx{color:#9fb3d1;font-size:.9rem;line-height:1.6}
+.card{background:#0f1a2e;border:1px solid #1b2c47;border-left:3px solid var(--c);border-radius:12px;padding:12px 14px;margin-bottom:10px;min-height:124px}
+.card .h{display:flex;justify-content:space-between;align-items:center;color:#9fb3d1;font-size:.85rem}
+.card .v{font-size:1.6rem;font-weight:800;color:#fff;margin:2px 0}
+.card .e{color:#7f93b2;font-size:.78rem;line-height:1.45}
+.tag{font-size:.72rem;padding:1px 9px;border-radius:99px;border:1px solid var(--c);color:var(--c)}
+.lp{background:#101a2c;border:1px solid #223653;border-radius:10px;padding:10px 14px;margin:8px 0;color:#d6e4f5;font-size:.92rem}
+h3.s{color:#00E5FF;font-size:1rem;letter-spacing:.06em;margin:18px 0 6px}
+@media(max-width:640px){.kp{grid-template-columns:repeat(2,1fr)}.hero .px{font-size:2.6rem}}
+</style>""", unsafe_allow_html=True)
+st.markdown('<h1 class="t">📊 基本面小幫手</h1><div class="sub">輸入代號自動抓財報｜台股 2330、美股 AAPL｜僅供學習，不構成投資建議</div>', unsafe_allow_html=True)
 
-sym = st.text_input("股票代號", placeholder="2330 或 AAPL").strip().upper()
-adj_in = st.number_input("（選填）要扣除的一次性損益，單位同下方金額（億元或十億美元）", value=0.0, step=1.0)
+sym = st.text_input("股票代號", placeholder="2330 或 AAPL", label_visibility="collapsed").strip().upper()
+with st.expander("進階：扣除一次性損益"):
+    adj_in = st.number_input("金額單位同下方財報（台股：億元，美股：十億美元）", value=0.0, step=1.0)
+
+COL = {"good": "#00E5A0", "ok": "#FFC857", "bad": "#FF5C7A", None: "#5f7596"}
+LBL = {"good": "良好", "ok": "普通", "bad": "留意", None: "無資料"}
+
+
+def rgba(h, a):
+    h = h.lstrip("#")
+    return f"rgba({int(h[0:2],16)},{int(h[2:4],16)},{int(h[4:6],16)},{a})"
+
 
 if sym:
     is_tw = bool(re.fullmatch(r"\d{4,6}[A-Z]?", sym))
@@ -279,24 +326,69 @@ if sym:
         old = d["ni"]
         d["ni"] = old - adj
         d["eps"] = d["eps"] * d["ni"] / old if d["eps"] else d["eps"]
-
     M, R = analyze(d)
-    score_n = {"good": 2, "ok": 1, "bad": 0}
+    hist = d["hist"]
+
+    # 台股慣例：紅漲綠跌；美股：綠漲紅跌
+    UP, DN = ("#FF4D6A", "#00E5A0") if is_tw else ("#00E5A0", "#FF4D6A")
+    price = d["price"]
+    chg_html, line_c, dtxt = "", "#00E5FF", ""
+    if len(hist) >= 2 and price is not None:
+        prev = float(hist["close"].iloc[-2])
+        diff, pc = price - prev, (price - prev) / prev * 100
+        c = UP if diff >= 0 else DN
+        line_c = UP if float(hist["close"].iloc[-1]) >= float(hist["close"].iloc[0]) else DN
+        arrow = "▲" if diff >= 0 else "▼"
+        chg_html = f'<div class="chg" style="color:{c}">{arrow} {abs(diff):.2f}（{abs(pc):.2f}%）</div>'
+        dtxt = f"收盤資料日期：{hist['date'].iloc[-1].date()}"
+    ptxt = "—" if price is None else f"{price:,.2f}"
+    st.markdown(f'<div class="hero"><div class="nm">{d["name"]}　{sym}</div>'
+                f'<div class="px">{ptxt}<small>{d["cur"]}</small></div>{chg_html}'
+                f'<div class="dt">{dtxt}｜財報最新期別 {d["asof"]}｜金額單位：{d["ul"]}</div></div>', unsafe_allow_html=True)
+
+    h52 = hist.tail(252)
+    f = lambda v: "—" if v is None else f"{v:,.2f}"
+    pe_t = "—" if not R["pe"] or R["pe"] <= 0 else f"{R['pe']:.1f} 倍"
+    yl_t = "—" if R["yl"] is None else f"{R['yl']*100:.2f}%"
+    hi = f(float(h52["close"].max())) if len(h52) else "—"
+    lo = f(float(h52["close"].min())) if len(h52) else "—"
+    st.markdown(f'<div class="kp"><div><span>本益比</span><b>{pe_t}</b></div><div><span>現金殖利率</span><b>{yl_t}</b></div>'
+                f'<div><span>52 週最高</span><b>{hi}</b></div><div><span>52 週最低</span><b>{lo}</b></div></div>', unsafe_allow_html=True)
+
+    if len(hist) > 2:
+        rng = st.radio("區間", ["1 個月", "3 個月", "6 個月", "1 年"], index=2, horizontal=True, label_visibility="collapsed")
+        n = {"1 個月": 21, "3 個月": 63, "6 個月": 126, "1 年": 252}[rng]
+        hh = hist.tail(n)
+        fig = go.Figure(go.Scatter(x=hh["date"], y=hh["close"], mode="lines", line=dict(color=line_c, width=2.2),
+                                   fill="tozeroy", fillcolor=rgba(line_c, 0.10), hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra></extra>"))
+        lo_, hi_ = float(hh["close"].min()), float(hh["close"].max())
+        pad = (hi_ - lo_) * 0.15 or 1
+        fig.update_layout(height=300, margin=dict(l=0, r=0, t=8, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                          showlegend=False, hovermode="x unified", font=dict(color="#9fb3d1"),
+                          xaxis=dict(showgrid=False, color="#5f7596"),
+                          yaxis=dict(range=[lo_ - pad, hi_ + pad], gridcolor="#16263f", color="#5f7596", side="right"))
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    sc_n = {"good": 2, "ok": 1, "bad": 0}
     lv = [m[2] for m in M if m[2]]
-    score = round(sum(score_n[v] for v in lv) / (len(lv) * 2) * 100) if lv else 0
-    st.subheader(f"{d['name']}（{sym}）　評分 {score} / 100")
-    st.caption(f"財報最新期別：{d['asof']}；股價為最近一個交易日；金額單位：{d['ul']}。")
+    score = round(sum(sc_n[v] for v in lv) / (len(lv) * 2) * 100) if lv else 0
+    sc_c = COL["good"] if score >= 70 else COL["ok"] if score >= 45 else COL["bad"]
+    st.markdown(f'<div class="sc"><div class="ring" style="background:conic-gradient({sc_c} {score}%,#1b2c47 0)"><i>{score}</i></div>'
+                f'<div class="tx"><b style="color:#fff">基本面評分</b><br>良好 {lv.count("good")} 項｜普通 {lv.count("ok")} 項｜留意 {lv.count("bad")} 項</div></div>',
+                unsafe_allow_html=True)
 
-    icon = {"good": "🟢 良好", "ok": "🟡 普通", "bad": "🔴 留意", None: "⚪ 無資料"}
-    for name, val, level, expl in M:
-        st.markdown(f"**{name}**　{val}　{icon[level]}")
-        st.caption(expl)
+    st.markdown('<h3 class="s">▌11 項關鍵指標</h3>', unsafe_allow_html=True)
+    for i in range(0, len(M), 2):
+        cols = st.columns(2)
+        for col, (name, val, level, expl) in zip(cols, M[i:i + 2]):
+            col.markdown(f'<div class="card" style="--c:{COL[level]}"><div class="h"><span>{name}</span><span class="tag">{LBL[level]}</span></div>'
+                         f'<div class="v">{val}</div><div class="e">{expl}</div></div>', unsafe_allow_html=True)
 
-    st.subheader("學習重點")
+    st.markdown('<h3 class="s">▌學習重點</h3>', unsafe_allow_html=True)
     for t in learn(R, adj):
-        st.info(t)
+        body = re.sub(r"[*][*](.+?)[*][*]", r"<b>\1</b>", t)
+        st.markdown(f'<div class="lp">{body}</div>', unsafe_allow_html=True)
 
     with st.expander("原始數據（出錯時請截圖回報）"):
-        raw = {k: v for k, v in d.items() if k not in ("ud", "ul", "mk", "cur")}
-        st.json({k: (round(v / d["ud"], 3) if k in ("rev", "prev", "gp", "ni", "eq", "ta", "tl", "ca", "cl", "cfo") and v else v)
-                 for k, v in raw.items()})
+        keys = ("rev", "prev", "gp", "ni", "eq", "ta", "tl", "ca", "cl", "cfo")
+        st.json({k: (round(v / d["ud"], 3) if k in keys and v else v) for k, v in d.items() if k not in ("ud", "ul", "mk", "cur", "hist")})
