@@ -373,57 +373,7 @@ def rgba(h, a):
     return f"rgba({int(h[0:2],16)},{int(h[2:4],16)},{int(h[4:6],16)},{a})"
 
 
-if sym:
-    is_tw = bool(re.fullmatch(r"\d{4,6}[A-Z]?", sym))
-    try:
-        with st.spinner("抓取資料中…"):
-            d = load_tw(sym) if is_tw else load_us(sym)
-    except Exception as e:
-        st.error(f"抓取失敗：{e}")
-        st.stop()
-
-    adj = adj_in * d["ud"]
-    if adj and d["ni"]:
-        old = d["ni"]
-        d["ni"] = old - adj
-        d["eps"] = d["eps"] * d["ni"] / old if d["eps"] else d["eps"]
-    M, R = analyze(d)
-    hist = d["hist"]
-    _f = lambda v: "—" if v is None else f"{v / d['ud']:,.2f}"
-    _g = lambda v: "—" if v is None else f"{v:,.2f}"
-    _lines = ["**本程式抓到的數字**", "",
-              f"- 股價：{_g(d['price'])} {d['cur']}", f"- 近四季 EPS：{_g(d['eps'])}",
-              f"- 每股淨值：{_g(d['bv'])}", f"- 年度股利：{_g(d['div'])}",
-              f"- 近四季營收：{_f(d['rev'])} {d['ul']}", f"- 近四季淨利：{_f(d['ni'])} {d['ul']}",
-              f"- 營業現金流：{_f(d['cfo'])} {d['ul']}", f"- 財報最新期別：{d['asof']}"]
-    side_nums.markdown("\n".join(_lines))
-
-    # 台股慣例：紅漲綠跌；美股：綠漲紅跌
-    UP, DN = ("#FF4D6A", "#00E5A0") if is_tw else ("#00E5A0", "#FF4D6A")
-    price = d["price"]
-    chg_html, line_c, dtxt = "", "#00E5FF", ""
-    if len(hist) >= 2 and price is not None:
-        prev = float(hist["close"].iloc[-2])
-        diff, pc = price - prev, (price - prev) / prev * 100
-        c = UP if diff >= 0 else DN
-        line_c = UP if float(hist["close"].iloc[-1]) >= float(hist["close"].iloc[0]) else DN
-        arrow = "▲" if diff >= 0 else "▼"
-        chg_html = f'<div class="chg" style="color:{c}">{arrow} {abs(diff):.2f}（{abs(pc):.2f}%）</div>'
-        dtxt = f"收盤資料日期：{hist['date'].iloc[-1].date()}"
-    ptxt = "—" if price is None else f"{price:,.2f}"
-    st.markdown(f'<div class="hero"><div class="nm">{d["name"]}　{sym}</div>'
-                f'<div class="px">{ptxt}<small>{d["cur"]}</small></div>{chg_html}'
-                f'<div class="dt">{dtxt}｜財報最新期別 {d["asof"]}｜金額單位：{d["ul"]}</div></div>', unsafe_allow_html=True)
-
-    h52 = hist.tail(252)
-    f = lambda v: "—" if v is None else f"{v:,.2f}"
-    pe_t = "—" if not R["pe"] or R["pe"] <= 0 else f"{R['pe']:.1f} 倍"
-    yl_t = "—" if R["yl"] is None else f"{R['yl']*100:.2f}%"
-    hi = f(float(h52["close"].max())) if len(h52) else "—"
-    lo = f(float(h52["close"].min())) if len(h52) else "—"
-    st.markdown(f'<div class="kp"><div><span>本益比</span><b>{pe_t}</b></div><div><span>現金殖利率</span><b>{yl_t}</b></div>'
-                f'<div><span>52 週最高</span><b>{hi}</b></div><div><span>52 週最低</span><b>{lo}</b></div></div>', unsafe_allow_html=True)
-
+def render_chart(hist, UP, DN):
     if len(hist) > 2:
         DAYS = {"1M": 30, "3M": 91, "6M": 182, "YTD": None, "1Y": 365, "5Y": 1826, "全部": None}
         tf = st.radio("時間範圍", list(DAYS), index=4, horizontal=True, label_visibility="collapsed")
@@ -494,6 +444,241 @@ if sym:
                           plot_bgcolor="rgba(0,0,0,0)", hovermode="x unified", font=dict(color="#9fb3d1"),
                           legend=dict(orientation="h", y=1.04, x=0, font=dict(size=11)), dragmode="pan")
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": True})
+
+
+# ---------- ETF 模式 ----------
+def is_tw_etf(sym):
+    return bool(re.fullmatch(r"00\d{2,4}[A-Z]?", sym))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def is_us_etf(sym):
+    import yfinance as yf
+    try:
+        return (yf.Ticker(sym).info or {}).get("quoteType") == "ETF"
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_etf_us(sym):
+    import yfinance as yf
+    t = yf.Ticker(sym)
+    info = {}
+    try:
+        info = t.info or {}
+    except Exception:
+        pass
+    h = t.history(period="5y")
+    if h.empty:
+        raise RuntimeError("查無此代號的資料")
+    hist = pd.DataFrame({"date": h.index.tz_localize(None), "open": h["Open"].astype(float).values,
+                         "high": h["High"].astype(float).values, "low": h["Low"].astype(float).values,
+                         "close": h["Close"].astype(float).values, "volume": h["Volume"].astype(float).values})
+    price = None
+    try:
+        price = float(t.fast_info["last_price"])
+    except Exception:
+        price = float(hist["close"].iloc[-1])
+    top, sect = [], {}
+    try:
+        fd = t.funds_data
+        hold = fd.top_holdings
+        for sym_, r in hold.head(10).iterrows():
+            top.append((str(sym_), str(r.get("Name", "")), float(r.get("Holding Percent", 0))))
+        sect = {str(k): float(v) for k, v in (fd.sector_weightings or {}).items()}
+    except Exception:
+        pass
+    y = info.get("yield") or info.get("trailingAnnualDividendYield")
+    return dict(name=info.get("longName") or info.get("shortName") or sym, cur="美元", price=price, hist=hist,
+                yld=y, er=info.get("netExpenseRatio"), aum=info.get("totalAssets"),
+                category=info.get("category"), family=info.get("fundFamily"), top=top, sect=sect)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_etf_tw(sid):
+    px = fm("TaiwanStockPrice", sid, (TODAY - dt.timedelta(days=1830)).isoformat())
+    if px.empty:
+        raise RuntimeError("查無此代號的資料")
+    pxs = px.sort_values("date")
+    cl = pxs["close"].astype(float).values
+    col = lambda n: pxs[n].astype(float).values if n in pxs else cl
+    hist = pd.DataFrame({"date": pd.to_datetime(pxs["date"]).values, "open": col("open"), "high": col("max"),
+                         "low": col("min"), "close": cl,
+                         "volume": pxs["Trading_Volume"].astype(float).values if "Trading_Volume" in pxs else 0.0})
+    price = float(cl[-1])
+    yld = None
+    try:
+        dv = fm("TaiwanStockDividend", sid, (TODAY - dt.timedelta(days=400)).isoformat())
+        if not dv.empty:
+            tot = 0.0
+            for _, r in dv.iterrows():
+                tot += float(r.get("CashEarningsDistribution") or 0) + float(r.get("CashStatutorySurplus") or 0)
+            yld = tot / price if tot else None
+    except Exception:
+        pass
+    name = sid
+    try:
+        headers = {"Authorization": f"Bearer {fm_token()}"} if fm_token() else {}
+        j = requests.get(FM, params={"dataset": "TaiwanStockInfo"}, headers=headers, timeout=30).json()
+        df = pd.DataFrame(j["data"])
+        r = df[df["stock_id"] == sid]
+        if len(r):
+            name = str(r.iloc[0]["stock_name"])
+    except Exception:
+        pass
+    return dict(name=name, cur="元", price=price, hist=hist, yld=yld, er=None, aum=None,
+                category=None, family=None, top=[], sect={})
+
+
+def render_etf(e, sym, is_tw):
+    hist = e["hist"]
+    UP, DN = ("#FF4D6A", "#00E5A0") if is_tw else ("#00E5A0", "#FF4D6A")
+    price = e["price"]
+    chg_html, dtxt = "", ""
+    if len(hist) >= 2 and price is not None:
+        prev = float(hist["close"].iloc[-2])
+        diff, pc = price - prev, (price - prev) / prev * 100
+        c = UP if diff >= 0 else DN
+        arrow = "▲" if diff >= 0 else "▼"
+        chg_html = f'<div class="chg" style="color:{c}">{arrow} {abs(diff):.2f}（{abs(pc):.2f}%）</div>'
+        dtxt = f"收盤資料日期：{hist['date'].iloc[-1].date()}"
+    meta = "｜".join(x for x in [e.get("category"), e.get("family")] if x)
+    st.markdown(f'<div class="hero"><div class="nm">{e["name"]}　{sym}　<span class="tag" style="--c:#00E5FF">ETF</span></div>'
+                f'<div class="px">{price:,.2f}<small>{e["cur"]}</small></div>{chg_html}'
+                f'<div class="dt">{dtxt}｜{meta}</div></div>', unsafe_allow_html=True)
+
+    last_d = hist["date"].iloc[-1]
+
+    def ret(days):
+        sub = hist[hist["date"] <= last_d - pd.Timedelta(days=days)]
+        if sub.empty:
+            return None
+        return float(hist["close"].iloc[-1]) / float(sub["close"].iloc[-1]) - 1
+
+    def rt(v):
+        if v is None:
+            return '<b>—</b>'
+        return f'<b style="color:{UP if v >= 0 else DN}">{v*100:+.1f}%</b>'
+
+    yl = e.get("yld")
+    er = e.get("er")
+    aum = e.get("aum")
+    h52 = hist.tail(252)
+    st.markdown(
+        f'<div class="kp"><div><span>殖利率</span><b>{"—" if yl is None else f"{yl*100:.2f}%"}</b></div>'
+        f'<div><span>費用率</span><b>{"—" if er is None else f"{er:.2f}%"}</b></div>'
+        f'<div><span>基金規模</span><b>{"—" if not aum else f"{aum/1e9:,.1f}B"}</b></div>'
+        f'<div><span>52 週區間</span><b style="font-size:.95rem">{h52["close"].min():,.2f} ~ {h52["close"].max():,.2f}</b></div></div>'
+        f'<div class="kp"><div><span>近 1 年（價格）</span>{rt(ret(365))}</div><div><span>近 3 年（價格）</span>{rt(ret(1095))}</div>'
+        f'<div><span>近 5 年（價格）</span>{rt(ret(1826))}</div><div><span>資料天數</span><b>{len(hist)}</b></div></div>',
+        unsafe_allow_html=True)
+
+    render_chart(hist, UP, DN)
+
+    top, sect = e.get("top") or [], e.get("sect") or {}
+    if top:
+        st.markdown('<h3 class="s">▌前十大持股</h3>', unsafe_allow_html=True)
+        pcts = [(p * 100 if p <= 1 else p) for _, _, p in top]
+        mx = max(pcts) or 1
+        rows = "".join(f'<div style="margin:7px 0"><div style="display:flex;justify-content:space-between;font-size:.85rem;color:#d6e4f5">'
+                       f'<span>{s_}　<span style="color:#7f93b2">{n_[:26]}</span></span><b>{p_:.1f}%</b></div>'
+                       f'<div style="height:5px;background:#1b2c47;border-radius:3px"><div style="height:5px;width:{p_/mx*100:.0f}%;background:#00E5FF;border-radius:3px"></div></div></div>'
+                       for (s_, n_, _), p_ in zip(top, pcts))
+        st.markdown(f'<div class="card" style="--c:#00E5FF">{rows}<div class="e">前十大合計約 {sum(pcts):.1f}%</div></div>', unsafe_allow_html=True)
+    if sect:
+        st.markdown('<h3 class="s">▌產業分布</h3>', unsafe_allow_html=True)
+        items = sorted(sect.items(), key=lambda kv: -kv[1])[:6]
+        rows = "".join(f'<div style="margin:7px 0"><div style="display:flex;justify-content:space-between;font-size:.85rem;color:#d6e4f5">'
+                       f'<span>{k_.replace("_", " ").title()}</span><b>{v_*100 if v_ <= 1 else v_:.1f}%</b></div>'
+                       f'<div style="height:5px;background:#1b2c47;border-radius:3px"><div style="height:5px;width:{min(v_*100 if v_ <= 1 else v_, 100):.0f}%;background:#7C4DFF;border-radius:3px"></div></div></div>'
+                       for k_, v_ in items)
+        st.markdown(f'<div class="card" style="--c:#7C4DFF">{rows}</div>', unsafe_allow_html=True)
+    if not top:
+        st.info("這檔的持股、費用率等資料這裡抓不到，請到左側「查證資料來源」的網站或投信官網查看。")
+
+    st.markdown('<h3 class="s">▌學習重點</h3>', unsafe_allow_html=True)
+    tips = ["**ETF 是一籃子股票。** 買一檔就等於同時持有很多公司，風險比單押一家分散，所以新手常從 ETF 開始；但它沒有「公司財報」，不能用本益比、ROE 這類個股指標去評分。"]
+    if er is not None:
+        tips.append(f"**費用率 {er:.2f}%。** 這是每年固定被扣的成本，長期複利下差距很大；同類型 ETF 通常費用率越低越有利。" if er <= 0.5
+                    else f"**費用率 {er:.2f}% 偏高。** 長期持有會明顯侵蝕報酬，建議和同類型 ETF 比較。")
+    if top:
+        tot = sum((p * 100 if p <= 1 else p) for _, _, p in top)
+        tips.append(f"**前十大持股佔約 {tot:.0f}%。** " + ("集中度偏高，少數公司的漲跌會明顯影響整檔 ETF。" if tot > 50 else "集中度不算高，分散程度較好。"))
+    if yl is not None:
+        tips.append(f"**殖利率約 {yl*100:.2f}%。** 高配息不等於高報酬，配息會讓價格相應下調，要看「含息總報酬」。")
+    tips.append("**上面的報酬只算價格漲跌，沒有含配息。** 過去績效不代表未來，也要留意追蹤的指數、規模與成交量（流動性）。")
+    for t in tips:
+        st.markdown(f'<div class="lp">{re.sub(r"[*][*](.+?)[*][*]", lambda m: "<b>" + m.group(1) + "</b>", t)}</div>', unsafe_allow_html=True)
+
+    lines = ["**本程式抓到的數字**", "", f"- 股價：{price:,.2f} {e['cur']}",
+             f"- 殖利率：{'—' if yl is None else f'{yl*100:.2f}%'}", f"- 費用率：{'—' if er is None else f'{er:.2f}%'}",
+             f"- 基金規模：{'—' if not aum else f'{aum/1e9:,.1f}B'}"]
+    side_nums.markdown("\n".join(lines))
+
+
+if sym:
+    is_tw = bool(re.fullmatch(r"\d{4,6}[A-Z]?", sym))
+    etf = is_tw_etf(sym) if is_tw else is_us_etf(sym)
+    if etf:
+        try:
+            with st.spinner("抓取 ETF 資料中…"):
+                e = load_etf_tw(sym) if is_tw else load_etf_us(sym)
+        except Exception as ex:
+            st.error(f"抓取失敗：{ex}")
+            st.stop()
+        render_etf(e, sym, is_tw)
+        st.stop()
+    try:
+        with st.spinner("抓取資料中…"):
+            d = load_tw(sym) if is_tw else load_us(sym)
+    except Exception as e:
+        st.error(f"抓取失敗：{e}")
+        st.stop()
+
+    adj = adj_in * d["ud"]
+    if adj and d["ni"]:
+        old = d["ni"]
+        d["ni"] = old - adj
+        d["eps"] = d["eps"] * d["ni"] / old if d["eps"] else d["eps"]
+    M, R = analyze(d)
+    hist = d["hist"]
+    _f = lambda v: "—" if v is None else f"{v / d['ud']:,.2f}"
+    _g = lambda v: "—" if v is None else f"{v:,.2f}"
+    _lines = ["**本程式抓到的數字**", "",
+              f"- 股價：{_g(d['price'])} {d['cur']}", f"- 近四季 EPS：{_g(d['eps'])}",
+              f"- 每股淨值：{_g(d['bv'])}", f"- 年度股利：{_g(d['div'])}",
+              f"- 近四季營收：{_f(d['rev'])} {d['ul']}", f"- 近四季淨利：{_f(d['ni'])} {d['ul']}",
+              f"- 營業現金流：{_f(d['cfo'])} {d['ul']}", f"- 財報最新期別：{d['asof']}"]
+    side_nums.markdown("\n".join(_lines))
+
+    # 台股慣例：紅漲綠跌；美股：綠漲紅跌
+    UP, DN = ("#FF4D6A", "#00E5A0") if is_tw else ("#00E5A0", "#FF4D6A")
+    price = d["price"]
+    chg_html, line_c, dtxt = "", "#00E5FF", ""
+    if len(hist) >= 2 and price is not None:
+        prev = float(hist["close"].iloc[-2])
+        diff, pc = price - prev, (price - prev) / prev * 100
+        c = UP if diff >= 0 else DN
+        line_c = UP if float(hist["close"].iloc[-1]) >= float(hist["close"].iloc[0]) else DN
+        arrow = "▲" if diff >= 0 else "▼"
+        chg_html = f'<div class="chg" style="color:{c}">{arrow} {abs(diff):.2f}（{abs(pc):.2f}%）</div>'
+        dtxt = f"收盤資料日期：{hist['date'].iloc[-1].date()}"
+    ptxt = "—" if price is None else f"{price:,.2f}"
+    st.markdown(f'<div class="hero"><div class="nm">{d["name"]}　{sym}</div>'
+                f'<div class="px">{ptxt}<small>{d["cur"]}</small></div>{chg_html}'
+                f'<div class="dt">{dtxt}｜財報最新期別 {d["asof"]}｜金額單位：{d["ul"]}</div></div>', unsafe_allow_html=True)
+
+    h52 = hist.tail(252)
+    f = lambda v: "—" if v is None else f"{v:,.2f}"
+    pe_t = "—" if not R["pe"] or R["pe"] <= 0 else f"{R['pe']:.1f} 倍"
+    yl_t = "—" if R["yl"] is None else f"{R['yl']*100:.2f}%"
+    hi = f(float(h52["close"].max())) if len(h52) else "—"
+    lo = f(float(h52["close"].min())) if len(h52) else "—"
+    st.markdown(f'<div class="kp"><div><span>本益比</span><b>{pe_t}</b></div><div><span>現金殖利率</span><b>{yl_t}</b></div>'
+                f'<div><span>52 週最高</span><b>{hi}</b></div><div><span>52 週最低</span><b>{lo}</b></div></div>', unsafe_allow_html=True)
+
+    render_chart(hist, UP, DN)
 
     sc_n = {"good": 2, "ok": 1, "bad": 0}
     lv = [m[2] for m in M if m[2]]
