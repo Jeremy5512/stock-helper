@@ -61,7 +61,7 @@ def load_tw(sid):
     s3 = (TODAY - dt.timedelta(days=1100)).isoformat()
     s1 = (TODAY - dt.timedelta(days=500)).isoformat()
     px = fm("TaiwanStockPrice", sid, (TODAY - dt.timedelta(days=1830)).isoformat())
-    fs = fm("TaiwanStockFinancialStatements", sid, s3)
+    fs = fm("TaiwanStockFinancialStatements", sid, (TODAY - dt.timedelta(days=1830)).isoformat())
     bs = fm("TaiwanStockBalanceSheet", sid, s1)
     cf = fm("TaiwanStockCashFlowsStatement", sid, s3)
     try:
@@ -81,6 +81,9 @@ def load_tw(sid):
     gp = qseries(fs, ["GrossProfit"])
     ni = qseries(fs, ["EquityAttributableToOwnersOfParent", "IncomeAfterTaxes"])
     eps = qseries(fs, ["EPS"])
+    trend = pd.DataFrame({"rev": rev, "gp": gp, "ni": ni, "eps": eps}).dropna(subset=["rev"]).tail(12)
+    trend["label"] = [f"{i.year}Q{(i.month - 1) // 3 + 1}" for i in trend.index]
+    trend = trend.reset_index(drop=True)
 
     def bsv(types):
         return latest(qseries(bs, types))
@@ -109,7 +112,7 @@ def load_tw(sid):
         div = sum(float(row.get(k) or 0) for k in ["CashEarningsDistribution", "CashStatutorySurplus"])
 
     return dict(
-        name=sid, cur="元", ud=1e8, ul="億元", mk="tw",
+        name=sid, cur="元", ud=1e8, ul="億元", mk="tw", trend=trend, tfreq="季",
         price=float(hist["close"].iloc[-1]), hist=hist,
         eps=ttm(eps), bv=(equity / shares) if equity and shares else None, div=div,
         rev=ttm(rev), prev=ttm(rev, 1), gp=ttm(gp), ni=ttm(ni),
@@ -184,13 +187,23 @@ def load_us(sym):
                 rev_t, prev = float(ann.iloc[-1]), float(ann.iloc[-2])
         except Exception:
             pass
+    trend = pd.DataFrame()
+    try:
+        ia = t.income_stmt
+        trend = pd.DataFrame({"rev": row(ia, ["Total Revenue"]), "gp": row(ia, ["Gross Profit"]),
+                              "ni": row(ia, ["Net Income Common Stockholders", "Net Income"]),
+                              "eps": row(ia, ["Diluted EPS", "Basic EPS"])}).dropna(subset=["rev"])
+        trend["label"] = [f"FY{i.year}" for i in trend.index]
+        trend = trend.reset_index(drop=True)
+    except Exception:
+        pass
     eps_t = ttm(eps)
     ni_t = ttm(ni)
     if eps_t is None and ni_t and shares:
         eps_t = ni_t / shares
 
     return dict(
-        name=info.get("shortName", sym), cur="美元", ud=1e9, ul="十億美元", mk="us",
+        name=info.get("shortName", sym), cur="美元", ud=1e9, ul="十億美元", mk="us", trend=trend, tfreq="年",
         price=price, hist=hist, eps=eps_t, bv=(equity / shares) if equity and shares else None, div=div,
         rev=rev_t, prev=prev, gp=ttm(gp), ni=ni_t,
         eq=equity, ta=bsl(["Total Assets"]),
@@ -304,6 +317,10 @@ h1.t{font-size:1.6rem;margin:0;font-weight:800;letter-spacing:.18em;background:l
 .lp{background:#101a2c;border:1px solid #223653;border-radius:10px;padding:10px 14px;margin:8px 0;color:#d6e4f5;font-size:.92rem}
 h3.s{color:#00E5FF;font-size:1rem;letter-spacing:.06em;margin:18px 0 6px}
 @media(max-width:640px){.kp{grid-template-columns:repeat(2,1fr)}.hero .px{font-size:2.6rem}}
+.cmp{width:100%;border-collapse:collapse;font-size:.88rem;color:#E6F1FF}
+.cmp th,.cmp td{padding:8px 10px;border-bottom:1px solid #1b2c47;text-align:right;white-space:nowrap}
+.cmp th:first-child,.cmp td:first-child{text-align:left;color:#9fb3d1}
+.cmp th{color:#00E5FF}
 @keyframes fi{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
 .t,.sub{animation:fi .8s ease both}
 h1.t.c{font-size:2.5rem;text-align:center}
@@ -332,6 +349,10 @@ adj_in = 0.0
 if sym:
     with st.expander("進階：扣除一次性損益"):
         adj_in = st.number_input("金額單位同下方財報（台股：億元，美股：十億美元）", value=0.0, step=1.0)
+sym2 = ""
+if sym:
+    with st.expander("⚖️ 比較第二檔股票（選填）"):
+        sym2 = st.text_input("第二檔代號", key="sym2", placeholder="例如 2454 或 NVDA").strip().upper()
 
 
 def site_links(sym, is_tw):
@@ -363,6 +384,54 @@ for _n, _u in site_links(sym, is_tw):
     st.sidebar.markdown(f"- [{_n}]({_u})")
 side_nums = st.sidebar.empty()
 st.sidebar.caption("各網站的計算口徑（例如 EPS 是否含一次性項目、近四季或年度）不同，小差異屬正常。")
+GLOSS = [
+    ("本益比 P/E", "股價 ÷ 每股盈餘，代表以目前獲利要多少年才賺回股價，越高代表市場期待越高。"),
+    ("股價淨值比 P/B", "股價 ÷ 每股淨值，看股價是帳面價值的幾倍。"),
+    ("EPS 每股盈餘", "公司賺的錢平均分到每一股是多少。"),
+    ("現金殖利率", "每年現金股利 ÷ 股價，像買股票的「利息」。"),
+    ("配息率", "賺的錢發出去多少比例，太高不易持續。"),
+    ("營收成長率", "營收比去年同期成長多少，反映生意有沒有變大。"),
+    ("毛利率", "賣東西扣掉直接成本後剩幾成，反映產品競爭力。"),
+    ("淨利率", "每 100 元營收最後落袋多少。"),
+    ("ROE 股東權益報酬率", "公司拿股東的錢賺錢的效率。"),
+    ("負債比", "總負債 ÷ 總資產，越高財務風險越大。"),
+    ("流動比率", "流動資產 ÷ 流動負債，看短期還債能力。"),
+    ("營業現金流", "本業實際收進來的現金，比帳面獲利更難造假。"),
+    ("庫藏股", "公司買回自家股票，會減少流通股數、縮小股東權益。"),
+    ("波動度", "股價上下震盪的程度，越大越劇烈。"),
+    ("最大回撤", "從高點跌到低點的最大跌幅，衡量最慘會虧多少。"),
+    ("ETF 與費用率", "ETF 是一籃子股票的基金；費用率是每年被扣的管理成本。"),
+]
+QUIZ = [
+    ("某股票本益比是 40 倍，最貼切的意思是？",
+     ["公司賺的錢是股價的 40 倍", "以目前獲利計算，約要 40 年才賺回股價", "股價一年會漲 40%", "配息率是 40%"], 1,
+     "本益比 = 股價 ÷ 每股盈餘，可想成「以現在的獲利，回本要幾年」。"),
+    ("毛利率 60% 但淨利率只有 3%，最可能的原因是？",
+     ["產品賣得不好", "營業費用或其他支出很高，吃掉大部分毛利", "公司沒有繳稅", "股價太低"], 1,
+     "毛利只扣直接成本，淨利還要再扣研發、行銷、管理、利息和稅等費用。"),
+    ("獲利現金含量（營業現金流 ÷ 淨利）長期遠低於 1，代表？",
+     ["公司很會賺錢", "賺的錢可能還沒真的收回來，要追查原因", "公司負債很低", "股利一定很高"], 1,
+     "帳面有獲利但沒有現金流入，可能是應收帳款堆積或一次性收益。"),
+    ("最大回撤 -40% 代表？",
+     ["股票一年跌 40%", "若買在最高點，最慘時帳面虧損約 40%", "公司虧損 40%", "每年會配息 40%"], 1,
+     "最大回撤是從高點跌到低點的最大跌幅，用來衡量可能承受的痛苦。"),
+    ("兩檔同類型 ETF 報酬接近，費用率分別是 0.05% 和 0.8%，長期持有通常？",
+     ["費用率不重要", "費用率低的比較有利", "費用率高的比較有利", "兩者完全一樣"], 1,
+     "費用率每年固定扣除，長期複利下會累積成明顯差距。"),
+]
+with st.sidebar.expander("📖 新手學院：名詞小字典"):
+    for _t, _e in GLOSS:
+        st.markdown(f"**{_t}**  \n{_e}")
+with st.sidebar.expander("🧠 新手小測驗"):
+    with st.form("quiz"):
+        _ans = [st.radio(f"Q{i+1}. {q}", o, index=None, key=f"qz{i}") for i, (q, o, _, _) in enumerate(QUIZ)]
+        _ok = st.form_submit_button("對答案")
+    if _ok:
+        _sc = sum(1 for a, (q, o, c, _) in zip(_ans, QUIZ) if a is not None and o.index(a) == c)
+        st.markdown(f"**得分：{_sc} / {len(QUIZ)}**")
+        for i, (a, (q, o, c, ex)) in enumerate(zip(_ans, QUIZ)):
+            right = a is not None and o.index(a) == c
+            st.markdown(f"{'✅' if right else '❌'} Q{i+1}：{ex}")
 
 COL = {"good": "#00E5A0", "ok": "#FFC857", "bad": "#FF5C7A", None: "#5f7596"}
 LBL = {"good": "良好", "ok": "普通", "bad": "留意", None: "無資料"}
@@ -444,6 +513,166 @@ def render_chart(hist, UP, DN):
                           plot_bgcolor="rgba(0,0,0,0)", hovermode="x unified", font=dict(color="#9fb3d1"),
                           legend=dict(orientation="h", y=1.04, x=0, font=dict(size=11)), dragmode="pan")
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": True})
+
+
+# ---------- 趨勢、風險、比較 ----------
+def _style(fig, title, h=230):
+    fig.update_layout(title=dict(text=title, font=dict(size=13, color="#9fb3d1"), x=0), height=h,
+                      margin=dict(l=0, r=0, t=34, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                      showlegend=False, font=dict(color="#9fb3d1"), hovermode="x unified", bargap=0.35)
+    fig.update_xaxes(type="category", color="#5f7596", showgrid=False)
+    fig.update_yaxes(gridcolor="#16263f", color="#5f7596")
+    return fig
+
+
+def render_trend(d):
+    tr = d.get("trend")
+    st.markdown(f'<h3 class="s">▌多年趨勢（{d.get("tfreq", "")}）</h3>', unsafe_allow_html=True)
+    if tr is None or len(tr) < 3:
+        st.caption("歷史財報資料不足，無法繪製趨勢。")
+        return
+    tr = tr.copy()
+    ud, ul, cfg = d["ud"], d["ul"], {"displayModeBar": False}
+    x = tr["label"]
+    tr["gm"] = tr["gp"] / tr["rev"] * 100
+    tr["nm"] = tr["ni"] / tr["rev"] * 100
+    c1, c2 = st.columns(2)
+    f1 = go.Figure(go.Bar(x=x, y=tr["rev"] / ud, marker_color="#00E5FF", hovertemplate="%{y:,.1f}<extra></extra>"))
+    c1.plotly_chart(_style(f1, f"營收（{ul}）"), use_container_width=True, config=cfg)
+    f2 = go.Figure(go.Bar(x=x, y=tr["ni"] / ud, marker_color="#7C4DFF", hovertemplate="%{y:,.1f}<extra></extra>"))
+    c2.plotly_chart(_style(f2, f"淨利（{ul}）"), use_container_width=True, config=cfg)
+    c3, c4 = st.columns(2)
+    f3 = go.Figure(go.Bar(x=x, y=tr["eps"], marker_color="#FFC857", hovertemplate="%{y:,.2f}<extra></extra>"))
+    c3.plotly_chart(_style(f3, "每股盈餘 EPS"), use_container_width=True, config=cfg)
+    f4 = go.Figure()
+    f4.add_trace(go.Scatter(x=x, y=tr["gm"], name="毛利率", mode="lines+markers", line=dict(color="#00E5A0", width=2),
+                            hovertemplate="毛利率 %{y:.1f}%<extra></extra>"))
+    f4.add_trace(go.Scatter(x=x, y=tr["nm"], name="淨利率", mode="lines+markers", line=dict(color="#FF5C7A", width=2),
+                            hovertemplate="淨利率 %{y:.1f}%<extra></extra>"))
+    _style(f4, "毛利率（綠）與淨利率（紅）%")
+    c4.plotly_chart(f4, use_container_width=True, config=cfg)
+
+    notes = []
+    r = tr["rev"].dropna()
+    if len(r) >= 2 and r.iloc[0] > 0:
+        a, b = tr.loc[r.index[0], "label"], tr.loc[r.index[-1], "label"]
+        notes.append(f"**營收** 從 {a} 到 {b} 變動 {(r.iloc[-1] / r.iloc[0] - 1) * 100:+.0f}%。長期向上是好公司的基本條件。")
+    g = tr["gm"].dropna()
+    if len(g) >= 2:
+        pp = g.iloc[-1] - g.iloc[0]
+        notes.append(f"**毛利率** 由 {g.iloc[0]:.1f}% 變為 {g.iloc[-1]:.1f}%（{'改善' if pp >= 0 else '下滑'} {abs(pp):.1f} 個百分點）。"
+                     + ("持續改善常代表議價力或產品組合變好。" if pp >= 0 else "持續下滑要留意成本壓力或競爭加劇。"))
+    e = tr["eps"].dropna()
+    if len(e) >= 2:
+        notes.append(f"**EPS** 由 {e.iloc[0]:.2f} 變為 {e.iloc[-1]:.2f}。要看的是長期方向，單期大起大落常是一次性因素。")
+    if d.get("tfreq") == "季":
+        notes.append("**單季數字有季節性。** 比較時建議拿「同一季度的跨年數字」，不要直接比相鄰兩季。")
+    for t in notes:
+        body = re.sub(r"[*][*](.+?)[*][*]", lambda m: "<b>" + m.group(1) + "</b>", t)
+        st.markdown(f'<div class="lp">{body}</div>', unsafe_allow_html=True)
+
+
+def risk_stats(hist):
+    c = hist.set_index("date")["close"].astype(float).dropna()
+    if len(c) < 60:
+        return None
+    ret = c.pct_change().dropna()
+    dd = c / c.cummax() - 1
+    low = dd.idxmin()
+    return dict(vol=float(ret.tail(252).std() * 252 ** 0.5), mdd=float(dd.min()), t_low=low,
+                t_high=c[:low].idxmax(), cur=float(dd.iloc[-1]), worst=float(ret.min()),
+                worst_d=ret.idxmin(), years=len(c) / 252, dd=dd)
+
+
+def render_risk(hist, UP, DN):
+    k = risk_stats(hist)
+    if not k:
+        return
+    st.markdown('<h3 class="s">▌風險檢視</h3>', unsafe_allow_html=True)
+
+    def lv(v, g, o):
+        return "good" if v <= g else "ok" if v <= o else "bad"
+
+    cards = [
+        ("年化波動度（近 1 年）", f"{k['vol']*100:.1f}%", lv(k["vol"], .25, .40),
+         "股價上下震盪的幅度。越高代表漲跌越劇烈，越考驗你的心臟。"),
+        (f"最大回撤（近 {k['years']:.1f} 年）", f"{k['mdd']*100:.1f}%", lv(-k["mdd"], .25, .45),
+         f"從 {k['t_high'].date()} 高點到 {k['t_low'].date()}，最慘帳面虧損這麼多。買在高點就可能遇到。"),
+        ("目前距離高點", f"{k['cur']*100:.1f}%", lv(-k["cur"], .10, .25),
+         "現在股價比歷史最高點低多少。0% 代表正在創高。"),
+        ("單日最大跌幅", f"{k['worst']*100:.1f}%", lv(-k["worst"], .04, .08),
+         f"發生在 {k['worst_d'].date()}。一天就可能跌這麼多，要先想好承受得起。"),
+    ]
+    for i in range(0, 4, 2):
+        cols = st.columns(2)
+        for col, (n_, v_, l_, e_) in zip(cols, cards[i:i + 2]):
+            col.markdown(f'<div class="card" style="--c:{COL[l_]}"><div class="h"><span>{n_}</span><span class="tag">{LBL[l_]}</span></div>'
+                         f'<div class="v">{v_}</div><div class="e">{e_}</div></div>', unsafe_allow_html=True)
+    dd = k["dd"]
+    fig = go.Figure(go.Scatter(x=dd.index, y=dd * 100, mode="lines", fill="tozeroy", line=dict(color="#FF5C7A", width=1.4),
+                               fillcolor="rgba(255,92,122,0.15)", hovertemplate="%{x|%Y-%m-%d}<br>%{y:.1f}%<extra></extra>"))
+    fig.update_layout(title=dict(text="距離歷史高點的跌幅 %（越深代表越痛）", font=dict(size=13, color="#9fb3d1"), x=0), height=220,
+                      margin=dict(l=0, r=0, t=34, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                      font=dict(color="#9fb3d1"), hovermode="x unified")
+    fig.update_xaxes(color="#5f7596", showgrid=False)
+    fig.update_yaxes(gridcolor="#16263f", color="#5f7596", side="right")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.markdown('<div class="lp"><b>報酬和風險是一體兩面。</b>看到高報酬時，先問自己：如果跌到最大回撤那麼深，我撐得住嗎？</div>', unsafe_allow_html=True)
+
+
+def load_any(s):
+    tw = bool(re.fullmatch(r"\d{4,6}[A-Z]?", s))
+    etf = is_tw_etf(s) if tw else is_us_etf(s)
+    if etf:
+        raise RuntimeError("目前只支援個股比較，ETF 請單獨查詢")
+    return load_tw(s) if tw else load_us(s)
+
+
+def render_compare(d1, s1, d2, s2):
+    st.markdown('<h3 class="s">▌雙股比較</h3>', unsafe_allow_html=True)
+    M1, _ = analyze(d1)
+    M2, _ = analyze(d2)
+
+    def sc(M):
+        lvs = [m[2] for m in M if m[2]]
+        return round(sum({"good": 2, "ok": 1, "bad": 0}[v] for v in lvs) / (len(lvs) * 2) * 100) if lvs else 0
+
+    def cell(val, level):
+        return f'<span style="color:{COL[level]}">●</span> {val}'
+
+    pr = lambda d: "—" if d["price"] is None else f"{d['price']:,.2f} {d['cur']}"
+    rows = [("基本面評分", f"<b>{sc(M1)}</b>", f"<b>{sc(M2)}</b>"), ("股價", pr(d1), pr(d2))]
+    for a, b in zip(M1, M2):
+        rows.append((a[0], cell(a[1], a[2]), cell(b[1], b[2])))
+    k1, k2 = risk_stats(d1["hist"]), risk_stats(d2["hist"])
+    if k1 and k2:
+        rows.append(("年化波動度（1 年）", f"{k1['vol']*100:.1f}%", f"{k2['vol']*100:.1f}%"))
+        rows.append(("最大回撤", f"{k1['mdd']*100:.1f}%", f"{k2['mdd']*100:.1f}%"))
+    body = "".join(f"<tr><td>{n}</td><td>{a}</td><td>{b}</td></tr>" for n, a, b in rows)
+    st.markdown(f'<div style="overflow-x:auto"><table class="cmp"><tr><th>指標</th><th>{s1}</th><th>{s2}</th></tr>{body}</table></div>',
+                unsafe_allow_html=True)
+
+    rng = st.radio("比較區間", ["3 個月", "6 個月", "1 年", "3 年", "5 年"], index=2, horizontal=True, key="cmp_rng")
+    days = {"3 個月": 91, "6 個月": 182, "1 年": 365, "3 年": 1095, "5 年": 1826}[rng]
+    h1, h2 = d1["hist"], d2["hist"]
+    end = min(h1["date"].iloc[-1], h2["date"].iloc[-1])
+    start = max(end - pd.Timedelta(days=days), h1["date"].iloc[0], h2["date"].iloc[0])
+    fig = go.Figure()
+    for h, s_, col in ((h1, s1, "#00E5FF"), (h2, s2, "#FFC857")):
+        x = h[(h["date"] >= start) & (h["date"] <= end)]
+        if len(x) > 1:
+            fig.add_trace(go.Scatter(x=x["date"], y=x["close"] / x["close"].iloc[0] * 100, name=s_, mode="lines",
+                                     line=dict(color=col, width=2), hovertemplate="%{y:.1f}<extra>" + s_ + "</extra>"))
+    fig.update_layout(title=dict(text="起點 = 100 的相對走勢", font=dict(size=13, color="#9fb3d1"), x=0), height=300,
+                      margin=dict(l=0, r=0, t=34, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                      font=dict(color="#9fb3d1"), hovermode="x unified", legend=dict(orientation="h", y=1.1, x=0))
+    fig.update_xaxes(color="#5f7596", showgrid=False)
+    fig.update_yaxes(gridcolor="#16263f", color="#5f7596", side="right")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    tip = "**比較要同類才有意義。** 同產業、規模相近的公司才適合並排看。"
+    if d1["mk"] != d2["mk"]:
+        tip += " 台股與美股的幣別、會計準則與估值水準不同，數字只能當參考。"
+    st.markdown(f'<div class="lp">{re.sub(r"[*][*](.+?)[*][*]", lambda m: "<b>" + m.group(1) + "</b>", tip)}</div>', unsafe_allow_html=True)
 
 
 # ---------- ETF 模式 ----------
@@ -575,6 +804,7 @@ def render_etf(e, sym, is_tw):
         unsafe_allow_html=True)
 
     render_chart(hist, UP, DN)
+    render_risk(hist, UP, DN)
 
     top, sect = e.get("top") or [], e.get("sect") or {}
     if top:
@@ -679,6 +909,7 @@ if sym:
                 f'<div><span>52 週最高</span><b>{hi}</b></div><div><span>52 週最低</span><b>{lo}</b></div></div>', unsafe_allow_html=True)
 
     render_chart(hist, UP, DN)
+    render_risk(hist, UP, DN)
 
     sc_n = {"good": 2, "ok": 1, "bad": 0}
     lv = [m[2] for m in M if m[2]]
@@ -695,10 +926,18 @@ if sym:
             col.markdown(f'<div class="card" style="--c:{COL[level]}"><div class="h"><span>{name}</span><span class="tag">{LBL[level]}</span></div>'
                          f'<div class="v">{val}</div><div class="e">{expl}</div></div>', unsafe_allow_html=True)
 
+    render_trend(d)
+
     st.markdown('<h3 class="s">▌學習重點</h3>', unsafe_allow_html=True)
     for t in learn(R, adj):
         body = re.sub(r"[*][*](.+?)[*][*]", r"<b>\1</b>", t)
         st.markdown(f'<div class="lp">{body}</div>', unsafe_allow_html=True)
+
+    if sym2:
+        try:
+            render_compare(d, sym, load_any(sym2), sym2)
+        except Exception as ex2:
+            st.warning(f"比較對象載入失敗：{ex2}")
 
     with st.expander("原始數據（出錯時請截圖回報）"):
         keys = ("rev", "prev", "gp", "ni", "eq", "ta", "tl", "ca", "cl", "cfo")
